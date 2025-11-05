@@ -290,17 +290,17 @@ int main()
 
   delete renderer;
 
-  // mtl_draw_vert_func->release();
-  // mtl_draw_frag_func->release();
+  mtl_draw_vert_func->release();
+  mtl_draw_frag_func->release();
 
-  // app_view->release();
-  // app_window->release();
-  // app->release();
+  app_view->release();
+  app_window->release();
+  app->release();
 
   // ----- //
 
-  // mtl_lib->release();
-  // mtl_dev->release();
+  mtl_lib->release();
+  mtl_dev->release();
 
-  // res_pool->release();
+  res_pool->release();
 }
