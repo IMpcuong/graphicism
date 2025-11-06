@@ -256,9 +256,9 @@ int main()
   //   class _NS_EXPORT Referencing : public _Base
   //   {
   //     public:
-  //       _Class*  retain();
+  //       _Class   *retain();
   //       void     release();
-  //       _Class*  autorelease();
+  //       _Class   *autorelease();
   //       UInteger retainCount() const;
   //   };
   // }
