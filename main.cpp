@@ -136,7 +136,7 @@ int main()
 
   // ----- //
 
-  const float arr_sz = _W * _H;
+  const size_t arr_sz = _W * _H;
   const float real_sz = sizeof(float) * arr_sz;
 
   MTL::Buffer *buf_f = mtl_dev->newBuffer(real_sz, MTL::ResourceStorageModeShared);
@@ -147,7 +147,7 @@ int main()
   float *s = static_cast<float *>(buf_s->contents());
   for (int i = 0; i < arr_sz; i++)
   {
-    f[i] = i;
+    f[i] = 1;
     s[i] = i;
   }
 
@@ -200,17 +200,13 @@ int main()
   // Converts our float-array to RGBA pixels
   //
 
-  float min_val = res[0], max_val = res[0];
-  for (int i = 0; i < arr_sz; i++)
-  {
-    min_val = std::min(min_val, res[i]);
-    max_val = std::max(max_val, res[i]);
-  }
+  float min_val = *std::min_element(res, res + arr_sz);
+  float max_val = *std::max_element(res, res + arr_sz);
 
   std::vector<uint8_t> pixels(arr_sz * 4);
   for (int i = 0; i < arr_sz; i++)
   {
-    float norm = (res[i] - min_val) * (max_val - min_val);
+    float norm = (res[i] - min_val) / (max_val - min_val);
     // @Note: Normalizes to 0-255 range.
     uint8_t color = static_cast<uint8_t>(norm * 255.0f);
     pixels[i * 4 + 0] = color; // R
