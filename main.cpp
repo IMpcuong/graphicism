@@ -5,6 +5,9 @@
 
 #include <iostream>
 
+#include <execinfo.h>
+#include <signal.h>
+
 #include <Metal/Metal.hpp>
 #include <AppKit/AppKit.hpp>
 #include <MetalKit/MetalKit.hpp>
@@ -100,8 +103,43 @@ public:
   void drawableSizeWillChange(MTK::View *view, CGSize size) override {}
 };
 
+void capture_signal_then_report(int sig_no, siginfo_t *info, void *_ctx)
+{
+  fprintf(stderr, "INFO: Emitted signal: %d\n", sig_no);
+  fprintf(stderr, "INFO: Violated address (si_addr): %p\n", info->si_addr);
+
+  const int _depth = 20;
+  void *report[_depth];
+  size_t size = backtrace(report, _depth);
+  fprintf(stderr, "INFO: Stack-trace:\n");
+  // Using the literal '2' for STDERR_FILENO since you noted the constant issue.
+  backtrace_symbols_fd(report, size, 2 /*fd=*/);
+
+  signal(sig_no, SIG_DFL);
+  raise(sig_no);
+}
+
 int main()
 {
+#define ENABLE_STACKTRACE
+#ifdef ENABLE_STACKTRACE
+  struct sigaction sig_reporter = {0};
+  // union __sigaction_u
+  // {
+  //   void (*__sa_handler)(int);
+  //   void (*__sa_sigaction)(int, siginfo_t *, void *);
+  // };
+  // #define sa_sigaction __sigaction_u.__sa_sigaction
+  sig_reporter.sa_sigaction = capture_signal_then_report;
+  sigemptyset(&sig_reporter.sa_mask);
+  sig_reporter.sa_flags = SA_SIGINFO;
+
+  if (sigaction(SIGSEGV, &sig_reporter, NULL) == -1)
+    perror("ERROR: Segmentation fault has been found!");
+#endif
+
+  // ----- //
+
   NS::AutoreleasePool *res_pool = NS::AutoreleasePool::alloc()->init();
 
   NS::SharedPtr<MTL::Device> mtl_dev = NS::TransferPtr(MTL::CreateSystemDefaultDevice());
@@ -136,7 +174,7 @@ int main()
 
   // ----- //
 
-  const size_t arr_sz = _W * _H;
+  const size_t arr_sz = static_cast<size_t>(_W * _H);
   const float real_sz = sizeof(float) * arr_sz;
 
   MTL::Buffer *buf_f = mtl_dev->newBuffer(real_sz, MTL::ResourceStorageModeShared);
@@ -144,10 +182,10 @@ int main()
   MTL::Buffer *buf_r = mtl_dev->newBuffer(real_sz, MTL::ResourceStorageModeShared);
 
   float *f = static_cast<float *>(buf_f->contents()); // typeof(buf_f->contents()) := <void *>
-  float *s = static_cast<float *>(buf_s->contents());
+  float *s = static_cast<float *>(buf_s->contents()); // typeof(buf_s->contents()) := <void *>
   for (int i = 0; i < arr_sz; i++)
   {
-    f[i] = 1;
+    f[i] = 2;
     s[i] = i;
   }
 
@@ -171,13 +209,15 @@ int main()
   float *res = static_cast<float *>(buf_r->contents());
   for (int i = 0; i < arr_sz / 1000; i++)
   {
-    std::cout << "f: " << f[i] << ", s: " << s[i] << "\n";
+    std::cout << "f: " << f[i] << ", s: " << s[i] << " | ";
     std::cout << f[i] << " + " << s[i] << " = " << res[i] << "\n";
   }
 
   buf_f->release();
   buf_s->release();
-  buf_r->release();
+  // @Note: Uncomment this one will collapse the whole render-pipeline.
+  //    Which can be rationalized as SEGV error in term of read-access violation.
+  // buf_r->release();
 
   mtl_compute_pstate->release();
   mtl_compute_func->release();
@@ -207,7 +247,7 @@ int main()
   for (int i = 0; i < arr_sz; i++)
   {
     float norm = (res[i] - min_val) / (max_val - min_val);
-    // @Note: Normalizes to 0-255 range.
+    // @Note: Normalize to 0-255 range.
     uint8_t color = static_cast<uint8_t>(norm * 255.0f);
     pixels[i * 4 + 0] = color; // R
     pixels[i * 4 + 1] = color; // G
