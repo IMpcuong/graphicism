@@ -206,7 +206,9 @@ int main()
 
   // ----- //
 
-  float *res = static_cast<float *>(buf_r->contents());
+  auto res = static_cast<float *>(std::malloc(real_sz));
+  std::memcpy(res, buf_r->contents(), real_sz);
+  // auto res = static_cast<float *>(buf_r->contents());
   for (int i = 0; i < arr_sz / 1000; i++)
   {
     std::cout << "f: " << f[i] << ", s: " << s[i] << " | ";
@@ -217,7 +219,9 @@ int main()
   buf_s->release();
   // @Note: Uncomment this one will collapse the whole render-pipeline.
   //    Which can be rationalized as SEGV error in term of read-access violation.
-  // buf_r->release();
+  // @Hack: Get rid of the abundance `buf_r` object by uplifting the
+  //    manual memory allocation, an old-schooled mechanism.
+  buf_r->release();
 
   mtl_compute_pstate->release();
   mtl_compute_func->release();
