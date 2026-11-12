@@ -43,13 +43,13 @@ struct Visible_Vert
   float2 coord;
 };
 
-vertex Visible_Vert draw_vert_shader(uint vert_id [[vertex_id]])
+vertex Visible_Vert draw_vert_window(uint vert_id [[vertex_id]])
 {
-  float2 pos[6] = {
+  constexpr float2 pos[6] = {
     float2(-1, -1), float2(1, -1), float2(-1, 1),
     float2(-1, 1),  float2(1, -1), float2(1, 1)
   };
-  float2 coords[6] = {
+  constexpr float2 coords[6] = {
     float2(0, 1), float2(1, 1), float2(0, 0),
     float2(0, 0), float2(1, 1), float2(1, 0)
   };
@@ -60,11 +60,27 @@ vertex Visible_Vert draw_vert_shader(uint vert_id [[vertex_id]])
   return vert;
 }
 
-fragment float4 draw_frag_shader(Visible_Vert in [[stage_in]],
+fragment float4 draw_frag_window(Visible_Vert in [[stage_in]],
     texture2d<float> txt [[texture(0)]])
 {
   constexpr sampler screen_obj(address::clamp_to_edge, filter::linear);
   return txt.sample(screen_obj, in.coord);
+}
+
+vertex float4 draw_vert_triangle(uint vert_id [[vertex_id]])
+{
+  constexpr float2 pos[3] = {
+    float2(0.0, 0.6),
+    float2(-0.6, -0.6),
+    float2(0.6, -0.6)
+  };
+
+  return float4(pos[vert_id], 0.0, 1.0);
+}
+
+fragment float4 draw_frag_triangle()
+{
+  return float4(1.0, 0.2, 0.1, 1.0); // opaque red-orange
 }
 )";
 
@@ -75,28 +91,33 @@ class Renderer : public MTK::ViewDelegate
 {
 public:
   MTL::CommandQueue *queue;
-  MTL::RenderPipelineState *pstate;
+  MTL::RenderPipelineState *bg_pstate;
+  MTL::RenderPipelineState *fg_pstate;
   MTL::Texture *texture;
 
-  Renderer(MTL::CommandQueue *q, MTL::RenderPipelineState *p, MTL::Texture *t)
-    : queue(q), pstate(p), texture(t) {}
+  Renderer(MTL::CommandQueue *q, MTL::RenderPipelineState *bg, MTL::RenderPipelineState *fg, MTL::Texture *t)
+    : queue(q), bg_pstate(bg), fg_pstate(fg), texture(t) {}
 
   void drawInMTKView(MTK::View *view) override
   {
-    MTL::CommandBuffer *cmd = queue->commandBuffer();
     MTL::RenderPassDescriptor *rpd = view->currentRenderPassDescriptor();
+    if (!rpd)
+      return;
 
-    if (rpd)
-    {
-      MTL::RenderCommandEncoder *enc = cmd->renderCommandEncoder(rpd);
-      enc->setRenderPipelineState(pstate);
-      enc->setFragmentTexture(texture, 0 /*index=*/);
-      enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
-          NS::UInteger(0) /*vertexStart=*/, NS::UInteger(6) /*vertexCount=*/);
-      enc->endEncoding();
+    MTL::CommandBuffer *cmd = queue->commandBuffer();
+    MTL::RenderCommandEncoder *enc = cmd->renderCommandEncoder(rpd);
 
-      cmd->presentDrawable(view->currentDrawable());
-    }
+    enc->setRenderPipelineState(bg_pstate);
+    enc->setFragmentTexture(texture, 0 /*index=*/);
+    enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
+        NS::UInteger(0) /*vertexStart=*/, NS::UInteger(6) /*vertexCount=*/);
+
+    enc->setRenderPipelineState(fg_pstate);
+    enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
+        NS::UInteger(0) /*vertexStart=*/, NS::UInteger(3) /*vertexCount=*/);
+
+    enc->endEncoding();
+    cmd->presentDrawable(view->currentDrawable());
     cmd->commit();
   }
 
@@ -154,23 +175,47 @@ int main()
   NS::Error *mtl_err = nullptr;
   NS::String *lib_name = NS::String::string(mtl_shader, NS::UTF8StringEncoding);
   MTL::Library *mtl_lib = mtl_dev->newLibrary(lib_name, nullptr /*options=*/, &mtl_err);
+  if (!mtl_lib) {
+    std::cerr << "Metal library compilation failed: "
+              << (mtl_err ? mtl_err->localizedDescription()->utf8String()
+                          : "unknown error")
+              << '\n';
+    return 1;
+  }
 
   NS::String *compute_func_name = NS::String::string("add_same_sz_arr_pair", NS::UTF8StringEncoding);
   MTL::Function *mtl_compute_func = mtl_lib->newFunction(compute_func_name);
   MTL::ComputePipelineState *mtl_compute_pstate = mtl_dev->newComputePipelineState(mtl_compute_func, &mtl_err);
 
-  NS::String *draw_vert_func_name = NS::String::string("draw_vert_shader", NS::UTF8StringEncoding);
-  MTL::Function *mtl_draw_vert_func = mtl_lib->newFunction(draw_vert_func_name);
+  // ---
 
-  NS::String *draw_frag_func_name = NS::String::string("draw_frag_shader", NS::UTF8StringEncoding);
-  MTL::Function *mtl_draw_frag_func = mtl_lib->newFunction(draw_frag_func_name);
+  NS::String *draw_vert_window_func_name = NS::String::string("draw_vert_window", NS::UTF8StringEncoding);
+  MTL::Function *mtl_draw_vert_window_func = mtl_lib->newFunction(draw_vert_window_func_name);
 
-  MTL::RenderPipelineDescriptor *mtl_render_pdesc = MTL::RenderPipelineDescriptor::alloc()->init();
-  mtl_render_pdesc->setVertexFunction(mtl_draw_vert_func);
-  mtl_render_pdesc->setFragmentFunction(mtl_draw_frag_func);
-  mtl_render_pdesc->colorAttachments()->object(0 /*attachmentIndex=*/)->setPixelFormat(PixelFormatBGRA8Unorm_sRGB);
+  NS::String *draw_frag_window_func_name = NS::String::string("draw_frag_window", NS::UTF8StringEncoding);
+  MTL::Function *mtl_draw_frag_window_func = mtl_lib->newFunction(draw_frag_window_func_name);
 
-  MTL::RenderPipelineState *mtl_render_pstate = mtl_dev->newRenderPipelineState(mtl_render_pdesc, &mtl_err);
+  MTL::RenderPipelineDescriptor *mtl_render_bg_pdesc = MTL::RenderPipelineDescriptor::alloc()->init();
+  mtl_render_bg_pdesc->setVertexFunction(mtl_draw_vert_window_func);
+  mtl_render_bg_pdesc->setFragmentFunction(mtl_draw_frag_window_func);
+  mtl_render_bg_pdesc->colorAttachments()->object(0 /*attachmentIndex=*/)->setPixelFormat(PixelFormatBGRA8Unorm_sRGB);
+
+  MTL::RenderPipelineState *mtl_render_bg_pstate = mtl_dev->newRenderPipelineState(mtl_render_bg_pdesc, &mtl_err);
+
+  // ---
+
+  NS::String *draw_vert_triangle_func_name = NS::String::string("draw_vert_triangle", NS::UTF8StringEncoding);
+  MTL::Function *mtl_draw_vert_triangle_func = mtl_lib->newFunction(draw_vert_triangle_func_name);
+
+  NS::String *draw_frag_triangle_func_name = NS::String::string("draw_frag_triangle", NS::UTF8StringEncoding);
+  MTL::Function *mtl_draw_frag_triangle_func = mtl_lib->newFunction(draw_frag_triangle_func_name);
+
+  MTL::RenderPipelineDescriptor *mtl_render_fg_pdesc = MTL::RenderPipelineDescriptor::alloc()->init();
+  mtl_render_fg_pdesc->setVertexFunction(mtl_draw_vert_triangle_func);
+  mtl_render_fg_pdesc->setFragmentFunction(mtl_draw_frag_triangle_func);
+  mtl_render_fg_pdesc->colorAttachments()->object(0 /*attachmentIndex=*/)->setPixelFormat(PixelFormatBGRA8Unorm_sRGB);
+
+  MTL::RenderPipelineState *mtl_render_fg_pstate = mtl_dev->newRenderPipelineState(mtl_render_fg_pdesc, &mtl_err);
 
   // ----- //
 
@@ -321,7 +366,7 @@ int main()
   // Renders phase.
   //
 
-  Renderer *renderer = new Renderer(mtl_cmd_queue, mtl_render_pstate, mtl_txt);
+  Renderer *renderer = new Renderer(mtl_cmd_queue, mtl_render_bg_pstate, mtl_render_fg_pstate, mtl_txt);
   app_view->setDelegate(renderer);
   app_view->setPaused(false);
   app_view->setEnableSetNeedsDisplay(true);
@@ -330,8 +375,10 @@ int main()
 
   delete renderer;
 
-  mtl_draw_vert_func->release();
-  mtl_draw_frag_func->release();
+  mtl_draw_vert_window_func->release();
+  mtl_draw_frag_window_func->release();
+  mtl_draw_vert_triangle_func->release();
+  mtl_draw_frag_triangle_func->release();
 
   app_view->release();
   app_window->release();
