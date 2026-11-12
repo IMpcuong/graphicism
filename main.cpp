@@ -12,6 +12,8 @@
 #include <AppKit/AppKit.hpp>
 #include <MetalKit/MetalKit.hpp>
 
+#include "mouse_click_bridge.h"
+
 //
 // @Note(impcuong): Abbrev-list
 //  + mtl  := Metal
@@ -67,7 +69,8 @@ fragment float4 draw_frag_window(Visible_Vert in [[stage_in]],
   return txt.sample(screen_obj, in.coord);
 }
 
-vertex float4 draw_vert_triangle(uint vert_id [[vertex_id]])
+vertex float4 draw_vert_triangle(uint vert_id [[vertex_id]],
+    constant float2 &offset [[buffer(0)]])
 {
   constexpr float2 pos[3] = {
     float2(0.0, 0.6),
@@ -75,7 +78,7 @@ vertex float4 draw_vert_triangle(uint vert_id [[vertex_id]])
     float2(0.6, -0.6)
   };
 
-  return float4(pos[vert_id], 0.0, 1.0);
+  return float4(pos[vert_id] + offset, 0.0, 1.0);
 }
 
 fragment float4 draw_frag_triangle()
@@ -98,6 +101,12 @@ public:
   Renderer(MTL::CommandQueue *q, MTL::RenderPipelineState *bg, MTL::RenderPipelineState *fg, MTL::Texture *t)
     : queue(q), bg_pstate(bg), fg_pstate(fg), texture(t) {}
 
+  void set_fg_pos(float x, float y)
+  {
+    fg_x = x;
+    fg_y = y;
+  }
+
   void drawInMTKView(MTK::View *view) override
   {
     MTL::RenderPassDescriptor *rpd = view->currentRenderPassDescriptor();
@@ -112,7 +121,9 @@ public:
     enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
         NS::UInteger(0) /*vertexStart=*/, NS::UInteger(6) /*vertexCount=*/);
 
+    const float offset[2] = {fg_x, fg_y};
     enc->setRenderPipelineState(fg_pstate);
+    enc->setVertexBytes(offset, sizeof(offset) /*length=*/, 0 /*index=*/);
     enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
         NS::UInteger(0) /*vertexStart=*/, NS::UInteger(3) /*vertexCount=*/);
 
@@ -122,7 +133,17 @@ public:
   }
 
   void drawableSizeWillChange(MTK::View *view, CGSize size) override {}
+
+private:
+  float fg_x = 0.0f;
+  float fg_y = 0.0f;
 };
+
+static void move_fg_obj_by_mouse_click(float x, float y, void *ctx)
+{
+  printf("Click pos := (%f, %f)\n", x, y);
+  static_cast<Renderer *>(ctx)->set_fg_pos(x, y);
+}
 
 void capture_signal_then_report(int sig_no, siginfo_t *info, void *_ctx)
 {
@@ -369,10 +390,14 @@ int main()
   Renderer *renderer = new Renderer(mtl_cmd_queue, mtl_render_bg_pstate, mtl_render_fg_pstate, mtl_txt);
   app_view->setDelegate(renderer);
   app_view->setPaused(false);
-  app_view->setEnableSetNeedsDisplay(true);
+  app_view->setEnableSetNeedsDisplay(false);
+  bool can_enable_mouse_monitor = install_mouse_click_monitor(reinterpret_cast<void *>(app_view), move_fg_obj_by_mouse_click, renderer);
+  if (!can_enable_mouse_monitor)
+    std::cerr << "Could not install mouse-click monitor\n";
 
   app->run(); // @Note: Triggering signal.
 
+  remove_mouse_click_monitor();
   delete renderer;
 
   mtl_draw_vert_window_func->release();
