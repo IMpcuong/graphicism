@@ -3,6 +3,7 @@
 #define MTL_PRIVATE_IMPLEMENTATION
 #define MTK_PRIVATE_IMPLEMENTATION
 
+#include <chrono>
 #include <iostream>
 
 #include <execinfo.h>
@@ -73,9 +74,9 @@ vertex float4 draw_vert_triangle(uint vert_id [[vertex_id]],
     constant float2 &offset [[buffer(0)]])
 {
   constexpr float2 pos[3] = {
-    float2(0.0, 0.6),
-    float2(-0.6, -0.6),
-    float2(0.6, -0.6)
+    float2(0.0, 0.3),
+    float2(-0.3, -0.3),
+    float2(0.3, -0.3)
   };
 
   return float4(pos[vert_id] + offset, 0.0, 1.0);
@@ -87,8 +88,25 @@ fragment float4 draw_frag_triangle()
 }
 )";
 
-const float _W = 512.0;
-const float _H = 512.0;
+struct Circle_Motion
+{
+  float center_x = 0.0f;
+  float center_y = 0.0f;
+  float radius = 0.3f;
+  float angular_speed = 1.0f;
+  float angle = 0.0f;
+
+  void update_delta(float delta_sec)
+  {
+    angle += angular_speed * delta_sec;
+  }
+
+  void update_circle_pos(float &x, float &y) const
+  {
+    x = center_x + radius * std::cos(angle);
+    y = center_y + radius * std::sin(angle);
+  }
+};
 
 class Renderer : public MTK::ViewDelegate
 {
@@ -98,13 +116,18 @@ public:
   MTL::RenderPipelineState *fg_pstate;
   MTL::Texture *texture;
 
+  Circle_Motion circle_motion;
+  std::chrono::steady_clock::time_point last_frame = std::chrono::steady_clock::now();
+
   Renderer(MTL::CommandQueue *q, MTL::RenderPipelineState *bg, MTL::RenderPipelineState *fg, MTL::Texture *t)
     : queue(q), bg_pstate(bg), fg_pstate(fg), texture(t) {}
 
   void set_fg_pos(float x, float y)
   {
-    fg_x = x;
-    fg_y = y;
+    this->fg_x = x;
+    this->fg_y = y;
+    this->circle_motion.center_x = x;
+    this->circle_motion.center_y = y;
   }
 
   void drawInMTKView(MTK::View *view) override
@@ -112,6 +135,13 @@ public:
     MTL::RenderPassDescriptor *rpd = view->currentRenderPassDescriptor();
     if (!rpd)
       return;
+
+    auto now = std::chrono::steady_clock::now();
+    float dt = std::chrono::duration<float>(now - last_frame).count();
+    // Avoid a large jump if rendering pauses or the window is dragged
+    if (dt > 0.05f)
+      dt = 0.05f;
+    last_frame = now;
 
     MTL::CommandBuffer *cmd = queue->commandBuffer();
     MTL::RenderCommandEncoder *enc = cmd->renderCommandEncoder(rpd);
@@ -121,7 +151,10 @@ public:
     enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
         NS::UInteger(0) /*vertexStart=*/, NS::UInteger(6) /*vertexCount=*/);
 
-    const float offset[2] = {fg_x, fg_y};
+    circle_motion.update_delta(dt);
+    circle_motion.update_circle_pos(this->fg_x, this->fg_y);
+
+    const float offset[2] = {this->fg_x, this->fg_y};
     enc->setRenderPipelineState(fg_pstate);
     enc->setVertexBytes(offset, sizeof(offset) /*length=*/, 0 /*index=*/);
     enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
@@ -160,6 +193,9 @@ void capture_signal_then_report(int sig_no, siginfo_t *info, void *_ctx)
   signal(sig_no, SIG_DFL);
   raise(sig_no);
 }
+
+const float _W = 1024.0;
+const float _H = 1024.0;
 
 int main()
 {
