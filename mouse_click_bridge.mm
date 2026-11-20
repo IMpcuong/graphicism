@@ -6,7 +6,7 @@
 static id g_mouse_monitor = nil;
 
 bool install_mouse_click_monitor(void *view_handle,
-    Mouse_Click_CB cb,
+    Mouse_Click_CB set_fg_pos_cb,
     void *ctx)
 {
   MTKView *view = (__bridge MTKView *)view_handle;
@@ -22,7 +22,7 @@ bool install_mouse_click_monitor(void *view_handle,
         float x = 2.0f * float((p.x - NSMinX(bound)) / NSWidth(bound)) - 1.0f;
         float y = 2.0f * float((p.y - NSMinY(bound)) / NSHeight(bound)) - 1.0f;
 
-        cb(x, y, ctx);
+        set_fg_pos_cb(x, y, ctx);
         NSLog(@"x: %f, y: %f", x, y);
       }
 

@@ -5,6 +5,8 @@
 
 #include <chrono>
 #include <iostream>
+#include <memory>
+#include <vector>
 
 #include <execinfo.h>
 #include <signal.h>
@@ -50,11 +52,11 @@ vertex Visible_Vert draw_vert_window(uint vert_id [[vertex_id]])
 {
   constexpr float2 pos[6] = {
     float2(-1, -1), float2(1, -1), float2(-1, 1),
-    float2(-1, 1),  float2(1, -1), float2(1, 1)
+    float2(-1, 1),  float2(1, -1), float2(1, 1),
   };
   constexpr float2 coords[6] = {
     float2(0, 1), float2(1, 1), float2(0, 0),
-    float2(0, 0), float2(1, 1), float2(1, 0)
+    float2(0, 0), float2(1, 1), float2(1, 0),
   };
 
   Visible_Vert vert;
@@ -76,7 +78,7 @@ vertex float4 draw_vert_triangle(uint vert_id [[vertex_id]],
   constexpr float2 pos[3] = {
     float2(0.0, 0.3),
     float2(-0.3, -0.3),
-    float2(0.3, -0.3)
+    float2(0.3, -0.3),
   };
 
   return float4(pos[vert_id] + offset, 0.0, 1.0);
@@ -84,16 +86,45 @@ vertex float4 draw_vert_triangle(uint vert_id [[vertex_id]],
 
 fragment float4 draw_frag_triangle()
 {
-  return float4(1.0, 0.2, 0.1, 1.0); // opaque red-orange
+  return float4(1.0, 0.2, 0.1, 1.0); // Opaque red-orange
+}
+
+vertex float4 draw_vert_triangle_outline(uint vert_id [[vertex_id]],
+    constant float2 &offset [[buffer(0)]])
+{
+  constexpr float2 pos[4] = {
+    float2(0.0, 0.3),
+    float2(-0.3, -0.3),
+    float2(0.3, -0.3),
+    float2(0.0, 0.3), // Close the outline
+  };
+
+  return float4(pos[vert_id] + offset, 0.0, 1.0);
+}
+
+fragment float4 draw_frag_triangle_outline()
+{
+  return float4(0.0, 0.0, 0.0, 1.0); // Black
 }
 )";
+
+struct Mtl_Release
+{
+  template<typename T>
+  void operator()(T *uniq_ptr)
+  {
+    if (uniq_ptr)
+      uniq_ptr->release();
+  }
+};
+using Render_PState_Ptr = std::unique_ptr<MTL::RenderPipelineState, Mtl_Release>;
 
 struct Circle_Motion
 {
   float center_x = 0.0f;
   float center_y = 0.0f;
   float radius = 0.3f;
-  float angular_speed = 1.0f;
+  float angular_speed = 1.5f;
   float angle = 0.0f;
 
   void update_delta(float delta_sec)
@@ -112,20 +143,19 @@ class Renderer : public MTK::ViewDelegate
 {
 public:
   MTL::CommandQueue *queue;
-  MTL::RenderPipelineState *bg_pstate;
-  MTL::RenderPipelineState *fg_pstate;
+  std::vector<Render_PState_Ptr> &pstates;
   MTL::Texture *texture;
 
   Circle_Motion circle_motion;
   std::chrono::steady_clock::time_point last_frame = std::chrono::steady_clock::now();
 
-  Renderer(MTL::CommandQueue *q, MTL::RenderPipelineState *bg, MTL::RenderPipelineState *fg, MTL::Texture *t)
-    : queue(q), bg_pstate(bg), fg_pstate(fg), texture(t) {}
+  Renderer(MTL::CommandQueue *queue, std::vector<Render_PState_Ptr> &pstates, MTL::Texture *txt)
+    : queue(queue), pstates(pstates), texture(txt) {}
 
-  void set_fg_pos(float x, float y)
+  void set_pos_follow_mouse_click(float x, float y)
   {
-    this->fg_x = x;
-    this->fg_y = y;
+    this->x = x;
+    this->y = y;
     this->circle_motion.center_x = x;
     this->circle_motion.center_y = y;
   }
@@ -146,19 +176,36 @@ public:
     MTL::CommandBuffer *cmd = queue->commandBuffer();
     MTL::RenderCommandEncoder *enc = cmd->renderCommandEncoder(rpd);
 
-    enc->setRenderPipelineState(bg_pstate);
+    enc->setRenderPipelineState(pstates[0].get());
     enc->setFragmentTexture(texture, 0 /*index=*/);
     enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
         NS::UInteger(0) /*vertexStart=*/, NS::UInteger(6) /*vertexCount=*/);
 
     circle_motion.update_delta(dt);
-    circle_motion.update_circle_pos(this->fg_x, this->fg_y);
+    circle_motion.update_circle_pos(this->x, this->y);
 
-    const float offset[2] = {this->fg_x, this->fg_y};
-    enc->setRenderPipelineState(fg_pstate);
-    enc->setVertexBytes(offset, sizeof(offset) /*length=*/, 0 /*index=*/);
-    enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
-        NS::UInteger(0) /*vertexStart=*/, NS::UInteger(3) /*vertexCount=*/);
+    constexpr float spacing = 0.25f;
+    const float offsets[5][2] = {
+      {this->x - spacing, this->y - spacing},
+      {this->x - spacing, this->y + spacing},
+      {this->x, this->y},
+      {this->x + spacing, this->y - spacing},
+      {this->x + spacing, this->y + spacing},
+    };
+    for (const auto &offset : offsets)
+    {
+      // Color-filled for this triangle
+      enc->setRenderPipelineState(pstates[1].get());
+      enc->setVertexBytes(offset, sizeof(offset) /*length=*/, 0 /*index=*/);
+      enc->drawPrimitives(MTL::PrimitiveTypeTriangle,
+          NS::UInteger(0) /*vertexStart=*/, NS::UInteger(3) /*vertexCount=*/);
+
+      // Outline-drawed for this triangle
+      enc->setRenderPipelineState(pstates[2].get());
+      enc->setVertexBytes(offset, sizeof(offset) /*length=*/, 0 /*index=*/);
+      enc->drawPrimitives(MTL::PrimitiveTypeLineStrip,
+          NS::UInteger(0) /*vertexStart=*/, NS::UInteger(4) /*vertexCount=*/);
+    }
 
     enc->endEncoding();
     cmd->presentDrawable(view->currentDrawable());
@@ -168,14 +215,14 @@ public:
   void drawableSizeWillChange(MTK::View *view, CGSize size) override {}
 
 private:
-  float fg_x = 0.0f;
-  float fg_y = 0.0f;
+  float x = 0.0f;
+  float y = 0.0f;
 };
 
 static void move_fg_obj_by_mouse_click(float x, float y, void *ctx)
 {
   printf("Click pos := (%f, %f)\n", x, y);
-  static_cast<Renderer *>(ctx)->set_fg_pos(x, y);
+  static_cast<Renderer *>(ctx)->set_pos_follow_mouse_click(x, y);
 }
 
 void capture_signal_then_report(int sig_no, siginfo_t *info, void *_ctx)
@@ -232,7 +279,8 @@ int main()
   NS::Error *mtl_err = nullptr;
   NS::String *lib_name = NS::String::string(mtl_shader, NS::UTF8StringEncoding);
   MTL::Library *mtl_lib = mtl_dev->newLibrary(lib_name, nullptr /*options=*/, &mtl_err);
-  if (!mtl_lib) {
+  if (!mtl_lib)
+  {
     std::cerr << "Metal library compilation failed: "
               << (mtl_err ? mtl_err->localizedDescription()->utf8String()
                           : "unknown error")
@@ -240,11 +288,42 @@ int main()
     return 1;
   }
 
+  // ---
+
   NS::String *compute_func_name = NS::String::string("add_same_sz_arr_pair", NS::UTF8StringEncoding);
   MTL::Function *mtl_compute_func = mtl_lib->newFunction(compute_func_name);
   MTL::ComputePipelineState *mtl_compute_pstate = mtl_dev->newComputePipelineState(mtl_compute_func, &mtl_err);
+  if (mtl_err)
+  {
+    std::cerr << mtl_err->localizedFailureReason()->utf8String() << "\n";
+    return 1;
+  }
 
   // ---
+
+  std::vector<Render_PState_Ptr> mtl_render_pstates;
+  auto init_render_pstate_with = [&](MTL::Function *vert_func, MTL::Function *frag_func) -> bool
+  {
+    auto *render_pdesc = MTL::RenderPipelineDescriptor::alloc()->init();
+    render_pdesc->setVertexFunction(vert_func);
+    render_pdesc->setFragmentFunction(frag_func);
+    render_pdesc->colorAttachments()->object(0 /*attachmentIndex=*/)->setPixelFormat(PixelFormatBGRA8Unorm_sRGB);
+
+    auto *render_pstate = mtl_dev->newRenderPipelineState(render_pdesc, &mtl_err);
+    if (!render_pstate)
+    {
+      auto err_msg = mtl_err
+        ? mtl_err->localizedFailureReason()->utf8String()
+        : "Could not create this render-pipeline";
+      std::cerr << err_msg << '\n';
+      return false;
+    }
+
+    mtl_render_pstates.emplace_back(render_pstate);
+    return true;
+  };
+
+  // --- Background ---
 
   NS::String *draw_vert_window_func_name = NS::String::string("draw_vert_window", NS::UTF8StringEncoding);
   MTL::Function *mtl_draw_vert_window_func = mtl_lib->newFunction(draw_vert_window_func_name);
@@ -252,14 +331,10 @@ int main()
   NS::String *draw_frag_window_func_name = NS::String::string("draw_frag_window", NS::UTF8StringEncoding);
   MTL::Function *mtl_draw_frag_window_func = mtl_lib->newFunction(draw_frag_window_func_name);
 
-  MTL::RenderPipelineDescriptor *mtl_render_bg_pdesc = MTL::RenderPipelineDescriptor::alloc()->init();
-  mtl_render_bg_pdesc->setVertexFunction(mtl_draw_vert_window_func);
-  mtl_render_bg_pdesc->setFragmentFunction(mtl_draw_frag_window_func);
-  mtl_render_bg_pdesc->colorAttachments()->object(0 /*attachmentIndex=*/)->setPixelFormat(PixelFormatBGRA8Unorm_sRGB);
+  if (!init_render_pstate_with(mtl_draw_vert_window_func, mtl_draw_frag_window_func))
+      return 1;
 
-  MTL::RenderPipelineState *mtl_render_bg_pstate = mtl_dev->newRenderPipelineState(mtl_render_bg_pdesc, &mtl_err);
-
-  // ---
+  // --- Foreground ---
 
   NS::String *draw_vert_triangle_func_name = NS::String::string("draw_vert_triangle", NS::UTF8StringEncoding);
   MTL::Function *mtl_draw_vert_triangle_func = mtl_lib->newFunction(draw_vert_triangle_func_name);
@@ -267,12 +342,17 @@ int main()
   NS::String *draw_frag_triangle_func_name = NS::String::string("draw_frag_triangle", NS::UTF8StringEncoding);
   MTL::Function *mtl_draw_frag_triangle_func = mtl_lib->newFunction(draw_frag_triangle_func_name);
 
-  MTL::RenderPipelineDescriptor *mtl_render_fg_pdesc = MTL::RenderPipelineDescriptor::alloc()->init();
-  mtl_render_fg_pdesc->setVertexFunction(mtl_draw_vert_triangle_func);
-  mtl_render_fg_pdesc->setFragmentFunction(mtl_draw_frag_triangle_func);
-  mtl_render_fg_pdesc->colorAttachments()->object(0 /*attachmentIndex=*/)->setPixelFormat(PixelFormatBGRA8Unorm_sRGB);
+  if (!init_render_pstate_with(mtl_draw_vert_triangle_func, mtl_draw_frag_triangle_func))
+    return 1;
 
-  MTL::RenderPipelineState *mtl_render_fg_pstate = mtl_dev->newRenderPipelineState(mtl_render_fg_pdesc, &mtl_err);
+  NS::String *draw_vert_triangle_outline_func_name = NS::String::string("draw_vert_triangle_outline", NS::UTF8StringEncoding);
+  MTL::Function *mtl_draw_vert_triangle_outline_func = mtl_lib->newFunction(draw_vert_triangle_outline_func_name);
+
+  NS::String *draw_frag_triangle_outline_func_name = NS::String::string("draw_frag_triangle_outline", NS::UTF8StringEncoding);
+  MTL::Function *mtl_draw_frag_triangle_outline_func = mtl_lib->newFunction(draw_frag_triangle_outline_func_name);
+
+  if (!init_render_pstate_with(mtl_draw_vert_triangle_outline_func, mtl_draw_frag_triangle_outline_func))
+    return 1;
 
   // ----- //
 
@@ -423,7 +503,7 @@ int main()
   // Renders phase.
   //
 
-  Renderer *renderer = new Renderer(mtl_cmd_queue, mtl_render_bg_pstate, mtl_render_fg_pstate, mtl_txt);
+  Renderer *renderer = new Renderer(mtl_cmd_queue, mtl_render_pstates, mtl_txt);
   app_view->setDelegate(renderer);
   app_view->setPaused(false);
   app_view->setEnableSetNeedsDisplay(false);
@@ -440,6 +520,8 @@ int main()
   mtl_draw_frag_window_func->release();
   mtl_draw_vert_triangle_func->release();
   mtl_draw_frag_triangle_func->release();
+  mtl_draw_vert_triangle_outline_func->release();
+  mtl_draw_frag_triangle_outline_func->release();
 
   app_view->release();
   app_window->release();
